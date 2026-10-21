@@ -1,0 +1,103 @@
+{
+    "$schema": "https://lnav.org/schemas/format-v1.schema.json",
+    "victorialogs_json": {
+        "title": "VictoriaLogs query results",
+        "description": "JSON lines from VictoriaLogs /select/logsql/query (journald fields). Used by vlq (bin/vlq, vlq.el).",
+        "url": "https://docs.victoriametrics.com/victorialogs/querying/",
+        "json": true,
+        "hide-extra": true,
+        "timestamp-field": "_time",
+        "body-field": "_msg",
+        "level-field": "level",
+        "level": {
+            "fatal": "^(emerg|alert|crit)",
+            "error": "^err",
+            "warning": "^warn",
+            "info": "^(info|notice)",
+            "debug": "^debug"
+        },
+        "opid-field": "_PID",
+        "line-format": [
+            {
+                "field": "__timestamp__",
+                "timestamp-format": "%Y-%m-%d %H:%M:%S"
+            },
+            " ",
+            {
+                "field": "_HOSTNAME",
+                "min-width": 8,
+                "max-width": 12,
+                "overflow": "truncate"
+            },
+            " ",
+            {
+                "field": "SYSLOG_IDENTIFIER",
+                "min-width": 12,
+                "max-width": 20,
+                "overflow": "truncate"
+            },
+            " ",
+            {
+                "field": "_msg"
+            }
+        ],
+        "value": {
+            "_HOSTNAME": {
+                "kind": "string",
+                "identifier": true
+            },
+            "SYSLOG_IDENTIFIER": {
+                "kind": "string",
+                "identifier": true
+            },
+            "_SYSTEMD_UNIT": {
+                "kind": "string",
+                "identifier": true
+            },
+            "CONTAINER_NAME": {
+                "kind": "string",
+                "identifier": true
+            },
+            "PRIORITY": {
+                "kind": "integer"
+            },
+            "_PID": {
+                "kind": "string",
+                "identifier": true
+            },
+            "level": {
+                "kind": "string",
+                "hidden": true
+            },
+            "_stream": {
+                "kind": "string",
+                "hidden": true
+            },
+            "_stream_id": {
+                "kind": "string",
+                "hidden": true
+            },
+            "REMOTEIP": {
+                "kind": "string",
+                "identifier": true
+            },
+            "ACCOUNTNAME": {
+                "kind": "string",
+                "identifier": true
+            },
+            "LISTENERID": {
+                "kind": "string",
+                "identifier": true
+            },
+            "DOMAIN": {
+                "kind": "string",
+                "identifier": true
+            }
+        },
+        "sample": [
+            {
+                "line": "{\"PRIORITY\":\"6\",\"SYSLOG_IDENTIFIER\":\"sshd-session\",\"_HOSTNAME\":\"server1\",\"_PID\":\"55039\",\"_SYSTEMD_UNIT\":\"ssh.service\",\"_msg\":\"Accepted publickey for alice from 198.51.100.7 port 33694 ssh2\",\"_time\":\"2026-10-21T08:41:04.178121Z\",\"level\":\"info\"}"
+            }
+        ]
+    }
+}

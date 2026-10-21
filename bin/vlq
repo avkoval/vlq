@@ -1,0 +1,179 @@
+#!/usr/bin/env python
+"""Query VictoriaLogs on the Pi and open the result in lnav.
+
+    vlq 'SYSLOG_IDENTIFIER:stalwart PRIORITY:<=4'      last hour (default)
+    vlq '_time:24h _SYSTEMD_UNIT:ssh.service "Accepted"'
+    vlq -n 50000 '_time:7d SYSLOG_IDENTIFIER:stalwart'  more lines (default 20000: the newest, shown oldest first)
+    vlq -o 'SYSLOG_IDENTIFIER:stalwart' > x.json        print JSON lines, no lnav
+
+Saved queries (bookmarks), in ~/.config/vlq/queries (synced Dell <-> Pi):
+    vlq -s stalwart-warn '_time:24h SYSLOG_IDENTIFIER:stalwart PRIORITY:<=4'
+    vlq -p spam-burst '_time:30m SYSLOG_IDENTIFIER:stalwart "auth.failed"'
+                    pin: the relative _time becomes a fixed [start, end], so the
+                    same lines come back later (until the 90-day retention)
+    vlq @stalwart-warn                                  run a saved query
+    vlq -l                                              list them
+
+Where VictoriaLogs is reached: the first endpoint in ~/.config/vlq/endpoints that
+answers (one per line: a base URL, or "ssh HOST" to run curl on HOST against
+127.0.0.1:9428); without that file http://127.0.0.1:9428.
+Results are kept in ~/.cache/vlq/ (one file per query), so lnav's bookmarks
+and notes for a query come back when the same query is run again.
+Format for lnav: lnav/victorialogs_json.json in this package, installed with
+`lnav -i lnav/victorialogs_json.json` (into ~/.config/lnav/formats/installed/).
+The Emacs front end (vlq.el) reads the same saved-queries file.
+Part of the vlq Emacs package.
+"""
+import argparse
+import datetime
+import hashlib
+import os
+import re
+import subprocess
+import sys
+import urllib.parse
+import urllib.request
+
+LOCAL = "http://127.0.0.1:9428"
+ENDPOINTS = os.path.expanduser("~/.config/vlq/endpoints")
+SAVED = os.path.expanduser("~/.config/vlq/queries")
+UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def healthy(base):
+    try:
+        with urllib.request.urlopen(base + "/health", timeout=2) as r:
+            return r.status == 200
+    except OSError:
+        return False
+
+
+def endpoints():
+    """URLs and ("ssh", HOST) pairs from ENDPOINTS, else [LOCAL]."""
+    result = []
+    if os.path.exists(ENDPOINTS):
+        for line in open(ENDPOINTS, encoding="utf-8"):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("ssh "):
+                result.append(("ssh", line[4:].strip()))
+            else:
+                result.append(line.rstrip("/"))
+    return result or [LOCAL]
+
+
+def fetch(query):
+    data = urllib.parse.urlencode({"query": query}).encode()
+    for ep in endpoints():
+        if isinstance(ep, tuple):
+            # curl runs on that host against its local VictoriaLogs
+            remote = ["curl", "-sS", "--fail", LOCAL + "/select/logsql/query",
+                      "--data-urlencode", "query@-"]
+            cmd = ["ssh", ep[1], " ".join(remote)]
+            return subprocess.run(cmd, input=query.encode(), capture_output=True, check=True).stdout
+        if healthy(ep):
+            with urllib.request.urlopen(ep + "/select/logsql/query", data=data, timeout=300) as r:
+                return r.read()
+    sys.exit("vlq: no VictoriaLogs endpoint answers (" + ENDPOINTS + ")")
+
+
+def load_saved():
+    """name -> query from SAVED; lines 'name: query', '#' comments."""
+    saved = {}
+    if os.path.exists(SAVED):
+        for line in open(SAVED, encoding="utf-8"):
+            line = line.strip()
+            if line and not line.startswith("#") and ":" in line:
+                name, q = line.split(":", 1)
+                saved[name.strip()] = q.strip()
+    return saved
+
+
+def save(name, q):
+    """Add or replace NAME in SAVED, keeping comments and order."""
+    os.makedirs(os.path.dirname(SAVED), exist_ok=True)
+    lines = open(SAVED, encoding="utf-8").read().splitlines() if os.path.exists(SAVED) else [
+        "# vlq saved queries: 'name: LogsQL'. See ~/bin/vlq -h."]
+    entry = f"{name}: {q}"
+    for i, line in enumerate(lines):
+        if line.split(":", 1)[0].strip() == name and not line.startswith("#"):
+            lines[i] = entry
+            break
+    else:
+        lines.append(entry)
+    with open(SAVED, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"vlq: saved {entry}", file=sys.stderr)
+
+
+def pin(q):
+    """Replace a relative _time:<n><unit> (default 1h) with a fixed [start, end] in UTC."""
+    m = re.search(r"(^|[\s(])_time:(\d+)([smhdw])\b", q)
+    if not m and re.search(r"(^|[\s(])_time:", q):
+        return q  # already absolute or another form: keep
+    secs = int(m.group(2)) * UNITS[m.group(3)] if m else 3600
+    end = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    start = end - datetime.timedelta(seconds=secs)
+    rng = f"_time:[{start:%Y-%m-%dT%H:%M:%SZ}, {end:%Y-%m-%dT%H:%M:%SZ}]"
+    return q[:m.start(2) - len("_time:")] + rng + q[m.end(3):] if m else f"{rng} {q}"
+
+
+def build_query(q, limit):
+    if not re.search(r"(^|[\s(])_time:", q):
+        q = "_time:1h " + q
+    return f"{q} | sort by (_time desc) | limit {limit}"
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("query", nargs="*", help="LogsQL, or @name of a saved query; _time:1h is added when no _time filter is given")
+    p.add_argument("-n", "--limit", type=int, default=20000)
+    p.add_argument("-o", "--stdout", action="store_true", help="print JSON lines instead of opening lnav")
+    p.add_argument("-s", "--save", metavar="NAME", help="save the query under NAME, then run it")
+    p.add_argument("-p", "--pin", metavar="NAME", help="save with the time range fixed to now, then run it")
+    p.add_argument("-l", "--list", action="store_true", help="list saved queries")
+    a = p.parse_args()
+
+    saved = load_saved()
+    if a.list:
+        for name, q in saved.items():
+            print(f"{name:24} {q}")
+        return
+    if not a.query:
+        p.error("a query or @name is needed")
+    text = " ".join(a.query)
+    if text.startswith("@"):
+        if text[1:] not in saved:
+            sys.exit(f"vlq: no saved query {text[1:]!r} in {SAVED} (vlq -l)")
+        text = saved[text[1:]]
+    if a.pin:
+        text = pin(text)
+        save(a.pin, text)
+    elif a.save:
+        save(a.save, text)
+
+    query = build_query(text, a.limit)
+    # fetched newest first (so the limit keeps the newest lines); lnav and
+    # readers want time to go forward
+    out = b"".join(reversed(fetch(query).splitlines(keepends=True)))
+    if a.stdout:
+        sys.stdout.buffer.write(out)
+        return
+    if not out.strip():
+        sys.exit(f"vlq: no results for: {query}")
+
+    cache = os.path.expanduser("~/.cache/vlq")
+    os.makedirs(cache, exist_ok=True)
+    label = a.pin or a.save or " ".join(a.query).lstrip("@")
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", label).strip("_")[:60]
+    name = f"{slug}-{hashlib.sha1(query.encode()).hexdigest()[:8]}.json"
+    path = os.path.join(cache, name)
+    with open(path, "wb") as f:
+        f.write(out)
+    print(f"vlq: {out.count(b'\n')} lines -> {path}", file=sys.stderr)
+    os.execvp("lnav", ["lnav", path])
+
+
+if __name__ == "__main__":
+    main()
