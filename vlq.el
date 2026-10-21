@@ -27,7 +27,7 @@
 ;; (its relative _time:1h becomes a fixed [start, end], so the same lines come
 ;; back later -- a bookmark on an incident), C-c C-l opens the same lines in
 ;; lnav, C-c C-d shows every field of the entry at point, C-c C-e edits the
-;; query, C-c C-r runs it again.
+;; query, g or C-c C-r runs it again (g replaces logview's file reload).
 ;;
 ;; Saved queries live in `vlq-queries-file', one "name: LogsQL" per line --
 ;; the same file the `bin/vlq' command-line companion reads, so both see the
@@ -196,9 +196,16 @@ On failure, CALLBACK gets nil and the error is shown."
   "QUERY with `vlq-default-time' added when it has no _time filter."
   (if (vlq--has-time-p query) query (format "_time:%s %s" vlq-default-time query)))
 
+(defun vlq-aggregate-p (query)
+  "Non-nil if QUERY has its own stats/sort pipe; its order is kept as is."
+  (string-match-p "|[[:space:]]*\\(?:stats\\|sort\\|top\\|uniq\\|count_uniq\\|facets\\)\\_>" query))
+
 (defun vlq--fetch-query (query)
-  "The LogsQL actually sent for QUERY: newest `vlq-limit' lines."
-  (format "%s | sort by (_time desc) | limit %d" (vlq--with-time query) vlq-limit))
+  "The LogsQL actually sent for QUERY: newest `vlq-limit' lines.
+An aggregate query (see `vlq-aggregate-p') only gets the limit."
+  (if (vlq-aggregate-p query)
+      (format "%s | limit %d" (vlq--with-time query) vlq-limit)
+    (format "%s | sort by (_time desc) | limit %d" (vlq--with-time query) vlq-limit)))
 
 (defconst vlq--units '(("s" . 1) ("m" . 60) ("h" . 3600) ("d" . 86400) ("w" . 604800)))
 
@@ -330,13 +337,13 @@ _time (a `stats' row) becomes its fields as NAME=value."
                                   (format "%s=%s" k (if (string-match-p "[ \"]" v) (prin1-to-string v) v))))
                               keys " ")))))
 
-(defun vlq--parse (json-lines)
-  "Records (hash tables) from JSON-LINES, oldest first."
+(defun vlq--parse (json-lines &optional keep-order)
+  "Records (hash tables) from JSON-LINES, oldest first.
+The query returns newest first, so the order is reversed, unless KEEP-ORDER."
   (let (records)
     (dolist (line (split-string json-lines "\n" t))
       (push (json-parse-string line :object-type 'hash-table :null-object nil) records))
-    ;; the query returns newest first; `push' reversed them
-    records))
+    (if keep-order (nreverse records) records)))
 
 ;;;; Results buffer
 
@@ -353,6 +360,10 @@ _time (a `stats' row) becomes its fields as NAME=value."
   "C-c C-l" #'vlq-lnav
   "C-c C-d" #'vlq-show-record
   "C-c C-h" #'vlq)
+
+;; `g' (logview: reload the file) runs the query again: these buffers have no
+;; file.  Set outside `defvar-keymap' so reloading the package updates it.
+(keymap-set vlq-results-mode-map "g" #'vlq-rerun)
 
 (define-minor-mode vlq-results-mode
   "Minor mode of vlq results buffers.
@@ -390,7 +401,7 @@ _time (a `stats' row) becomes its fields as NAME=value."
 
 (defun vlq--fill (buf out)
   (with-current-buffer buf
-    (let ((records (vlq--parse out))
+    (let ((records (vlq--parse out (vlq-aggregate-p vlq--query)))
           (inhibit-read-only t)
           (name vlq--name) (query vlq--query))
       (if (fboundp 'logview-mode)
@@ -398,6 +409,8 @@ _time (a `stats' row) becomes its fields as NAME=value."
         (special-mode))
       ;; major mode change killed the locals
       (setq vlq--name name vlq--query query vlq--raw out)
+      ;; `g' in logview (and `revert-buffer') runs the query again
+      (setq-local revert-buffer-function (lambda (&rest _) (vlq-rerun)))
       (erase-buffer)
       (dolist (rec records)
         (let ((start (point)))
@@ -471,7 +484,11 @@ frame in vterm when available, else in a `term' buffer."
                 (make-directory (file-name-directory file) t)
                 ;; RAW is newest first; lnav flags lines that go back in time
                 (with-temp-file file
-                  (insert (mapconcat #'identity (nreverse (split-string raw "\n" t)) "\n") "\n"))
+                  (let ((lines (split-string raw "\n" t)))
+                    (insert (mapconcat #'identity
+                                       (if (vlq-aggregate-p (cdr cell)) lines (nreverse lines))
+                                       "\n")
+                            "\n")))
                 (cond ((display-graphic-p)
                        (apply #'start-process "vlq-lnav" nil (append vlq-terminal-command (list "lnav" file))))
                       ((fboundp 'vterm)

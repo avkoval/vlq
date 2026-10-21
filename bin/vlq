@@ -119,9 +119,19 @@ def pin(q):
     return q[:m.start(2) - len("_time:")] + rng + q[m.end(3):] if m else f"{rng} {q}"
 
 
+AGGREGATE = re.compile(r"\|\s*(stats|sort|top|uniq|count_uniq|facets)\b")
+
+
+def is_aggregate(q):
+    """A query with its own stats/sort pipe: keep its order, no time sort."""
+    return bool(AGGREGATE.search(q))
+
+
 def build_query(q, limit):
     if not re.search(r"(^|[\s(])_time:", q):
         q = "_time:1h " + q
+    if is_aggregate(q):
+        return f"{q} | limit {limit}"
     return f"{q} | sort by (_time desc) | limit {limit}"
 
 
@@ -156,7 +166,9 @@ def main():
     query = build_query(text, a.limit)
     # fetched newest first (so the limit keeps the newest lines); lnav and
     # readers want time to go forward
-    out = b"".join(reversed(fetch(query).splitlines(keepends=True)))
+    out = fetch(query)
+    if not is_aggregate(text):
+        out = b"".join(reversed(out.splitlines(keepends=True)))
     if a.stdout:
         sys.stdout.buffer.write(out)
         return

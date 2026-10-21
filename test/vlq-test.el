@@ -64,7 +64,16 @@
 
 (ert-deftest vlq-test-parse-order ()
   (let ((recs (vlq--parse "{\"_msg\":\"newest\"}\n{\"_msg\":\"oldest\"}\n")))
-    (should (equal (mapcar (lambda (r) (gethash "_msg" r)) recs) '("oldest" "newest")))))
+    (should (equal (mapcar (lambda (r) (gethash "_msg" r)) recs) '("oldest" "newest"))))
+  (let ((recs (vlq--parse "{\"n\":\"9\"}\n{\"n\":\"1\"}\n" t)))
+    (should (equal (mapcar (lambda (r) (gethash "n" r)) recs) '("9" "1")))))
+
+(ert-deftest vlq-test-aggregate ()
+  (should (vlq-aggregate-p "* | stats by (x) count() n | sort by (n desc)"))
+  (should (vlq-aggregate-p "x |sort by (_time)"))
+  (should-not (vlq-aggregate-p "\"stats\" | unpack_json from _msg"))
+  (should (string-suffix-p "| sort by (n desc) | limit 5"
+                           (let ((vlq-limit 5)) (vlq--fetch-query "_time:1h * | stats count() n | sort by (n desc)")))))
 
 (ert-deftest vlq-test-endpoints-file ()
   (let ((vlq-endpoints nil)

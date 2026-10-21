@@ -76,11 +76,11 @@ For lnav: `lnav -i lnav/victorialogs_json.json`. Command line: link `bin/vlq` in
 | `g`   | redraw and recount                         |
 
 In a results buffer (logview's own keys stay as they are — filters, `e`/`w`/`i` level views, navigation — so vlq's
-keys are under `C-c`):
+keys are under `C-c`, except `g`):
 
 | Key       | Action                                                  |
 |-----------|---------------------------------------------------------|
-| `C-c C-r` | run the query again                                     |
+| `g`, `C-c C-r` | run the query again (`g` replaces logview's file reload) |
 | `C-c C-e` | edit the query and run it                               |
 | `C-c C-s` | save the query under a name                             |
 | `C-c C-p` | pin: save with the time range fixed to now              |
